@@ -115,11 +115,14 @@ def page_admin():
 
     st.subheader("1. Schedule Exam")
     
+    # --- FIX: READ DB FIRST TO SET DEFAULTS ---
     current_start = run_query("SELECT value FROM config WHERE key='start_time'", fetch=True)
     
+    # Default is NOW
     default_date = now_ist.date()
     default_time = now_ist.time()
     
+    # If DB has a time, use THAT as default
     if current_start:
         try:
             saved_dt = datetime.datetime.fromisoformat(current_start[0][0])
@@ -136,6 +139,7 @@ def page_admin():
 
     with st.form("settings_form"):
         c1, c2 = st.columns(2)
+        # CRITICAL: We use 'value=' to ensure input box respects the DB time
         exam_d = c1.date_input("Exam Date", value=default_date)
         exam_t = c2.time_input("Start Time", value=default_time)
         dur = st.number_input("Duration (minutes)", value=30, min_value=1)
@@ -201,6 +205,7 @@ def page_exam():
     end_dt = start_dt + datetime.timedelta(minutes=int(dur_str[0][0]))
     now = get_current_time()
 
+    # --- WAITING ROOM ---
     if now < start_dt:
         st.empty() 
         wait_seconds = (start_dt - now).total_seconds()
@@ -218,12 +223,14 @@ def page_exam():
         st.rerun()
         return
 
+    # --- TIME EXPIRED ---
     if now > end_dt:
         st.error("Time is up! Auto-submitting...")
         calculate_and_submit(user)
         st.rerun()
         return
 
+    # --- EXAM STARTED ---
     left_sec = (end_dt - now).total_seconds()
     mins = int(left_sec // 60)
     secs = int(left_sec % 60)
