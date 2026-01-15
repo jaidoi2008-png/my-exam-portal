@@ -4,7 +4,7 @@ import sqlite3
 import datetime
 import time
 import hashlib
-import pytz # NEW LIBRARY FOR TIMEZONES
+import pytz
 
 # --- CONFIGURATION ---
 DB_FILE = "exam_system.db"
@@ -107,7 +107,6 @@ def page_login():
 def page_admin():
     st.title("Admin Panel")
     
-    # DEBUG: Show current time to Admin to be sure
     now_ist = get_current_time()
     st.info(f"Current Server Time (IST): {now_ist.strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -119,7 +118,6 @@ def page_admin():
 
     with st.form("settings_form"):
         c1, c2 = st.columns(2)
-        # Default to current IST time
         exam_d = c1.date_input("Exam Date", value=now_ist.date())
         exam_t = c2.time_input("Start Time", value=now_ist.time())
         dur = st.number_input("Duration (minutes)", value=30, min_value=1)
@@ -130,7 +128,6 @@ def page_admin():
         show_res = st.checkbox("Show result immediately?", value=True)
         
         if st.form_submit_button("Save Settings"):
-            # Combine Date and Time and attach IST timezone info
             dt_naive = datetime.datetime.combine(exam_d, exam_t)
             dt_aware = IST.localize(dt_naive)
             
@@ -181,16 +178,13 @@ def page_exam():
         st.warning("Exam not scheduled.")
         return
 
-    # Parse Time (Handle IST)
     start_dt = datetime.datetime.fromisoformat(start_str[0][0])
     end_dt = start_dt + datetime.timedelta(minutes=int(dur_str[0][0]))
     now = get_current_time()
 
-    # Time Logic
     if now < start_dt:
         st.warning(f"Exam starts at: {start_dt.strftime('%H:%M:%S')}")
-        st.info(f"Current Time: {now.strftime('%H:%M:%S')}")
-        time.sleep(2) # Refresh faster
+        time.sleep(2)
         st.rerun()
         return
 
@@ -200,28 +194,59 @@ def page_exam():
         st.rerun()
         return
 
-    # EXAM INTERFACE
+    # --- NEW STICKY TIMER LOGIC ---
     left_sec = (end_dt - now).total_seconds()
-    st.sidebar.metric("Time Left", f"{int(left_sec//60)}:{int(left_sec%60):02d}")
+    mins = int(left_sec // 60)
+    secs = int(left_sec % 60)
     
+    # Color changes to RED if less than 2 minutes
+    timer_color = "#d32f2f" if mins < 2 else "#2e7d32" 
+    
+    # CSS to inject a fixed element at top-left
+    # We use z-index 9999 to make sure it floats ABOVE everything else
+    sticky_html = f"""
+    <div style="
+        position: fixed; 
+        top: 60px; 
+        left: 20px; 
+        z-index: 9999; 
+        background-color: {timer_color}; 
+        color: white; 
+        padding: 10px 20px; 
+        border-radius: 8px; 
+        font-weight: bold; 
+        font-size: 20px; 
+        box-shadow: 2px 2px 10px rgba(0,0,0,0.2);
+    ">
+        ⏳ Time Left: {mins:02d}:{secs:02d}
+    </div>
+    """
+    st.markdown(sticky_html, unsafe_allow_html=True)
+    # ------------------------------
+
     questions = run_query("SELECT * FROM questions", fetch=True)
     if 'user_answers' not in st.session_state:
         st.session_state['user_answers'] = {}
 
-    st.header("Final Exam")
+    st.write("## Final Exam Questions")
+    st.write("---")
+    
     for q in questions:
         qid = q[0]
         opts = [q[2], q[3], q[4], q[5]]
         prev = st.session_state['user_answers'].get(qid, None)
         idx = opts.index(prev) if prev else None
-        val = st.radio(f"**{q[1]}**", opts, index=idx, key=qid)
+        
+        # Unique key ensures state is kept
+        val = st.radio(f"**Q. {q[1]}**", opts, index=idx, key=f"q_{qid}")
         st.session_state['user_answers'][qid] = val
         st.write("---")
 
-    if st.button("Submit Final Answers"):
+    if st.button("Submit Final Answers", type="primary"):
         calculate_and_submit(user)
         st.rerun()
     
+    # Refresh every 1s to update the sticky timer
     time.sleep(1)
     st.rerun()
 
