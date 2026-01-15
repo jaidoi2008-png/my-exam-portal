@@ -10,7 +10,7 @@ import pytz
 DB_FILE = "exam_system.db"
 st.set_page_config(page_title="Online Exam Portal", layout="wide")
 
-# Define India Timezone
+# Define India Timezone (CRITICAL)
 IST = pytz.timezone('Asia/Kolkata')
 
 # --- DATABASE ENGINE ---
@@ -108,28 +108,38 @@ def page_admin():
     st.title("Admin Panel")
     
     now_ist = get_current_time()
-    st.info(f"Current Server Time (IST): {now_ist.strftime('%Y-%m-%d %H:%M:%S')}")
+    st.info(f"🕒 Current Server Time (IST): **{now_ist.strftime('%d-%b-%Y %H:%M:%S')}**")
 
-    st.subheader("1. Exam Settings")
+    st.subheader("1. Schedule Exam")
+    
+    # Fetch current
+    current_start = run_query("SELECT value FROM config WHERE key='start_time'", fetch=True)
+    if current_start:
+        dt_saved = datetime.datetime.fromisoformat(current_start[0][0])
+        st.success(f"✅ Exam currently scheduled for: **{dt_saved.strftime('%d-%b-%Y %H:%M:%S')}**")
+    else:
+        st.warning("⚠️ No exam scheduled yet.")
+
     defaults = {}
-    for k in ['start_time', 'duration', 'neg_marking', 'penalty', 'show_result']:
+    for k in ['duration', 'neg_marking', 'penalty', 'show_result']:
         res = run_query(f"SELECT value FROM config WHERE key='{k}'", fetch=True)
         defaults[k] = res[0][0] if res else None
 
     with st.form("settings_form"):
         c1, c2 = st.columns(2)
-        # Default to current IST time
+        # Default to Today and Now
         exam_d = c1.date_input("Exam Date", value=now_ist.date())
         exam_t = c2.time_input("Start Time", value=now_ist.time())
         dur = st.number_input("Duration (minutes)", value=30, min_value=1)
         
+        st.markdown("---")
         st.markdown("**Scoring Rules**")
         ena_neg = st.checkbox("Enable Negative Marking?", value=(defaults['neg_marking']=='1'))
         pen_amt = st.number_input("Penalty", value=0.25, step=0.05)
         show_res = st.checkbox("Show result immediately?", value=True)
         
-        if st.form_submit_button("Save Settings"):
-            # Combine Date and Time and attach IST timezone info
+        if st.form_submit_button("Save & Schedule"):
+            # Combine & Localize
             dt_naive = datetime.datetime.combine(exam_d, exam_t)
             dt_aware = IST.localize(dt_naive)
             
@@ -138,7 +148,9 @@ def page_admin():
             run_query("INSERT OR REPLACE INTO config VALUES ('neg_marking', ?)", ('1' if ena_neg else '0',))
             run_query("INSERT OR REPLACE INTO config VALUES ('penalty', ?)", (str(pen_amt),))
             run_query("INSERT OR REPLACE INTO config VALUES ('show_result', ?)", ('1' if show_res else '0',))
-            st.success(f"Exam Scheduled for: {dt_aware.strftime('%Y-%m-%d %H:%M:%S')}")
+            st.success("Settings Saved!")
+            time.sleep(1)
+            st.rerun()
 
     st.subheader("2. Upload Questions")
     up_file = st.file_uploader("Upload CSV", type='csv')
@@ -161,7 +173,7 @@ def page_admin():
 def page_exam():
     user = st.session_state['user']
     
-    # Check if submitted
+    # 1. Check if submitted
     my_score = run_query("SELECT score FROM users WHERE username=?", (user,), fetch=True)[0][0]
     if my_score != -999:
         st.info("Exam Submitted.")
@@ -172,7 +184,7 @@ def page_exam():
             st.write("Results hidden.")
         return
 
-    # Check Schedule
+    # 2. Check Schedule
     start_str = run_query("SELECT value FROM config WHERE key='start_time'", fetch=True)
     dur_str = run_query("SELECT value FROM config WHERE key='duration'", fetch=True)
     
@@ -185,25 +197,31 @@ def page_exam():
     end_dt = start_dt + datetime.timedelta(minutes=int(dur_str[0][0]))
     now = get_current_time()
 
-    # --- WAITING ROOM (FUTURE EXAM) ---
+    # --- WAITING ROOM (THE LOGIC YOU ASKED FOR) ---
     if now < start_dt:
-        # Calculate time to wait
+        st.empty() # Clear previous
+        
+        # Calculate countdown
         wait_seconds = (start_dt - now).total_seconds()
         hours = int(wait_seconds // 3600)
         minutes = int((wait_seconds % 3600) // 60)
         seconds = int(wait_seconds % 60)
         
-        st.subheader("⏳ Please Wait")
-        st.info(f"Exam Scheduled for: {start_dt.strftime('%d-%b-%Y %H:%M:%S')}")
-        st.warning(f"Starts in: {hours}h {minutes}m {seconds}s")
-        st.write("The exam will start automatically when the timer reaches zero.")
+        # Display Waiting Screen
+        st.title("⏳ Exam Waiting Room")
+        st.markdown(f"### Hello, **{user}**")
+        st.info(f"Exam Scheduled for: **{start_dt.strftime('%I:%M %p')}**")
+        st.error(f"Starts in: **{hours}h {minutes}m {seconds}s**")
         
-        # Auto-refresh every 2 seconds to check time
-        time.sleep(2) 
+        st.write("Please do not close this window. The exam will start automatically.")
+        
+        # CRITICAL: Refresh every 1 second to check time
+        time.sleep(1) 
         st.rerun()
         return
-    # ----------------------------------
+    # ---------------------------------------------
 
+    # 3. Check if Time Expired
     if now > end_dt:
         st.error("Time is up! Auto-submitting...")
         calculate_and_submit(user)
@@ -214,7 +232,7 @@ def page_exam():
     left_sec = (end_dt - now).total_seconds()
     mins = int(left_sec // 60)
     secs = int(left_sec % 60)
-    timer_color = "#d32f2f" if mins < 2 else "#1565C0" # Red if low, Blue normally
+    timer_color = "#d32f2f" if mins < 2 else "#1565C0" 
     
     sticky_html = f"""
     <div style="
@@ -239,6 +257,7 @@ def page_exam():
     st.markdown(sticky_html, unsafe_allow_html=True)
     # ------------------------------
 
+    # 4. EXAM CONTENT
     questions = run_query("SELECT * FROM questions", fetch=True)
     if 'user_answers' not in st.session_state:
         st.session_state['user_answers'] = {}
@@ -252,7 +271,6 @@ def page_exam():
         prev = st.session_state['user_answers'].get(qid, None)
         idx = opts.index(prev) if prev else None
         
-        # Unique key ensures state is kept
         val = st.radio(f"**Q. {q[1]}**", opts, index=idx, key=f"q_{qid}")
         st.session_state['user_answers'][qid] = val
         st.write("---")
@@ -261,7 +279,7 @@ def page_exam():
         calculate_and_submit(user)
         st.rerun()
     
-    # Refresh every 1s to update the sticky timer
+    # 5. Timer Refresh Loop
     time.sleep(1)
     st.rerun()
 
