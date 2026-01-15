@@ -118,6 +118,7 @@ def page_admin():
 
     with st.form("settings_form"):
         c1, c2 = st.columns(2)
+        # Default to current IST time
         exam_d = c1.date_input("Exam Date", value=now_ist.date())
         exam_t = c2.time_input("Start Time", value=now_ist.time())
         dur = st.number_input("Duration (minutes)", value=30, min_value=1)
@@ -128,6 +129,7 @@ def page_admin():
         show_res = st.checkbox("Show result immediately?", value=True)
         
         if st.form_submit_button("Save Settings"):
+            # Combine Date and Time and attach IST timezone info
             dt_naive = datetime.datetime.combine(exam_d, exam_t)
             dt_aware = IST.localize(dt_naive)
             
@@ -136,7 +138,7 @@ def page_admin():
             run_query("INSERT OR REPLACE INTO config VALUES ('neg_marking', ?)", ('1' if ena_neg else '0',))
             run_query("INSERT OR REPLACE INTO config VALUES ('penalty', ?)", (str(pen_amt),))
             run_query("INSERT OR REPLACE INTO config VALUES ('show_result', ?)", ('1' if show_res else '0',))
-            st.success("Settings Saved!")
+            st.success(f"Exam Scheduled for: {dt_aware.strftime('%Y-%m-%d %H:%M:%S')}")
 
     st.subheader("2. Upload Questions")
     up_file = st.file_uploader("Upload CSV", type='csv')
@@ -178,15 +180,29 @@ def page_exam():
         st.warning("Exam not scheduled.")
         return
 
+    # Parse Time (Handle IST)
     start_dt = datetime.datetime.fromisoformat(start_str[0][0])
     end_dt = start_dt + datetime.timedelta(minutes=int(dur_str[0][0]))
     now = get_current_time()
 
+    # --- WAITING ROOM (FUTURE EXAM) ---
     if now < start_dt:
-        st.warning(f"Exam starts at: {start_dt.strftime('%H:%M:%S')}")
-        time.sleep(2)
+        # Calculate time to wait
+        wait_seconds = (start_dt - now).total_seconds()
+        hours = int(wait_seconds // 3600)
+        minutes = int((wait_seconds % 3600) // 60)
+        seconds = int(wait_seconds % 60)
+        
+        st.subheader("⏳ Please Wait")
+        st.info(f"Exam Scheduled for: {start_dt.strftime('%d-%b-%Y %H:%M:%S')}")
+        st.warning(f"Starts in: {hours}h {minutes}m {seconds}s")
+        st.write("The exam will start automatically when the timer reaches zero.")
+        
+        # Auto-refresh every 2 seconds to check time
+        time.sleep(2) 
         st.rerun()
         return
+    # ----------------------------------
 
     if now > end_dt:
         st.error("Time is up! Auto-submitting...")
@@ -194,31 +210,30 @@ def page_exam():
         st.rerun()
         return
 
-    # --- NEW STICKY TIMER LOGIC ---
+    # --- STICKY TIMER (TOP RIGHT) ---
     left_sec = (end_dt - now).total_seconds()
     mins = int(left_sec // 60)
     secs = int(left_sec % 60)
+    timer_color = "#d32f2f" if mins < 2 else "#1565C0" # Red if low, Blue normally
     
-    # Color changes to RED if less than 2 minutes
-    timer_color = "#d32f2f" if mins < 2 else "#2e7d32" 
-    
-    # CSS to inject a fixed element at top-left
-    # We use z-index 9999 to make sure it floats ABOVE everything else
     sticky_html = f"""
     <div style="
         position: fixed; 
-        top: 60px; 
-        left: 20px; 
-        z-index: 9999; 
+        top: 50px; 
+        right: 20px; 
+        z-index: 99999; 
         background-color: {timer_color}; 
         color: white; 
-        padding: 10px 20px; 
-        border-radius: 8px; 
+        padding: 15px; 
+        border-radius: 10px; 
         font-weight: bold; 
-        font-size: 20px; 
-        box-shadow: 2px 2px 10px rgba(0,0,0,0.2);
+        font-size: 24px; 
+        box-shadow: 0px 4px 12px rgba(0,0,0,0.3);
+        text-align: center;
+        width: 200px;
     ">
-        ⏳ Time Left: {mins:02d}:{secs:02d}
+        Time Left<br>
+        <span style="font-size: 32px;">{mins:02d}:{secs:02d}</span>
     </div>
     """
     st.markdown(sticky_html, unsafe_allow_html=True)
