@@ -60,6 +60,9 @@ def calculate_and_submit(user):
     score = 0
     total = len(questions)
     
+    if total == 0:
+        return 0
+
     for q in questions:
         qid = q[0]
         correct = q[6]
@@ -70,7 +73,7 @@ def calculate_and_submit(user):
         elif selected is not None and is_neg:
             score -= pen_val
             
-    final_percent = (score / total) * 100 if total > 0 else 0
+    final_percent = (score / total) * 100
     run_query("UPDATE users SET score=? WHERE username=?", (final_percent, user))
     return final_percent
 
@@ -112,24 +115,20 @@ def page_admin():
 
     st.subheader("1. Schedule Exam")
     
-    # --- FETCH SAVED SETTINGS (THE FIX) ---
     current_start = run_query("SELECT value FROM config WHERE key='start_time'", fetch=True)
     
-    # Initialize defaults with NOW
     default_date = now_ist.date()
     default_time = now_ist.time()
     
-    # Overwrite defaults if a schedule exists in DB
     if current_start:
         try:
             saved_dt = datetime.datetime.fromisoformat(current_start[0][0])
             default_date = saved_dt.date()
             default_time = saved_dt.time()
-            st.success(f"✅ Exam is currently scheduled for: **{saved_dt.strftime('%d-%b-%Y %H:%M:%S')}**")
+            st.success(f"✅ Exam is currently scheduled for: **{saved_dt.strftime('%d-%b-%Y %H:%M %p')}**")
         except:
             pass
 
-    # Fetch other defaults
     defaults = {}
     for k in ['duration', 'neg_marking', 'penalty', 'show_result']:
         res = run_query(f"SELECT value FROM config WHERE key='{k}'", fetch=True)
@@ -137,7 +136,6 @@ def page_admin():
 
     with st.form("settings_form"):
         c1, c2 = st.columns(2)
-        # Use the SAVED values as defaults, not 'now'
         exam_d = c1.date_input("Exam Date", value=default_date)
         exam_t = c2.time_input("Start Time", value=default_time)
         dur = st.number_input("Duration (minutes)", value=30, min_value=1)
@@ -145,13 +143,11 @@ def page_admin():
         st.markdown("---")
         st.markdown("**Scoring Rules**")
         ena_neg = st.checkbox("Enable Negative Marking?", value=(defaults['neg_marking']=='1'))
-        pen_amt = st.number_input("Penalty", value=0.25, step=0.05)
-        show_res = st.checkbox("Show result immediately?", value=True)
+        pen_amt = st.number_input("Penalty", value=float(defaults['penalty']) if defaults.get('penalty') else 0.25, step=0.05)
+        show_res = st.checkbox("Show result immediately?", value=(defaults['show_result']=='1' if defaults.get('show_result') else True))
         
         if st.form_submit_button("Save & Schedule"):
-            # Combine Date and Time
             dt_naive = datetime.datetime.combine(exam_d, exam_t)
-            # Add Timezone Info
             dt_aware = IST.localize(dt_naive)
             
             run_query("INSERT OR REPLACE INTO config VALUES ('start_time', ?)", (dt_aware.isoformat(),))
@@ -184,7 +180,6 @@ def page_admin():
 def page_exam():
     user = st.session_state['user']
     
-    # 1. Check if submitted
     my_score = run_query("SELECT score FROM users WHERE username=?", (user,), fetch=True)[0][0]
     if my_score != -999:
         st.info("Exam Submitted.")
@@ -195,7 +190,6 @@ def page_exam():
             st.write("Results hidden.")
         return
 
-    # 2. Check Schedule
     start_str = run_query("SELECT value FROM config WHERE key='start_time'", fetch=True)
     dur_str = run_query("SELECT value FROM config WHERE key='duration'", fetch=True)
     
@@ -203,12 +197,10 @@ def page_exam():
         st.warning("Exam not scheduled.")
         return
 
-    # Parse Time (Handle IST)
     start_dt = datetime.datetime.fromisoformat(start_str[0][0])
     end_dt = start_dt + datetime.timedelta(minutes=int(dur_str[0][0]))
     now = get_current_time()
 
-    # --- WAITING ROOM ---
     if now < start_dt:
         st.empty() 
         wait_seconds = (start_dt - now).total_seconds()
@@ -226,41 +218,61 @@ def page_exam():
         st.rerun()
         return
 
-    # 3. Check if Time Expired
     if now > end_dt:
         st.error("Time is up! Auto-submitting...")
         calculate_and_submit(user)
         st.rerun()
         return
 
-    # --- STICKY TIMER ---
     left_sec = (end_dt - now).total_seconds()
     mins = int(left_sec // 60)
     secs = int(left_sec % 60)
     timer_color = "#d32f2f" if mins < 2 else "#1565C0" 
     
     sticky_html = f"""
-    <div style="
-        position: fixed; 
-        top: 50px; 
-        right: 20px; 
-        z-index: 99999; 
-        background-color: {timer_color}; 
-        color: white; 
-        padding: 15px; 
-        border-radius: 10px; 
-        font-weight: bold; 
-        font-size: 24px; 
-        box-shadow: 0px 4px 12px rgba(0,0,0,0.3);
-        text-align: center;
-        width: 200px;
-    ">
-        Time Left<br>
-        <span style="font-size: 32px;">{mins:02d}:{secs:02d}</span>
+    <div style="position: fixed; top: 50px; right: 20px; z-index: 99999; background-color: {timer_color}; color: white; padding: 15px; border-radius: 10px; font-weight: bold; font-size: 24px; box-shadow: 0px 4px 12px rgba(0,0,0,0.3); text-align: center; width: 200px;">
+        Time Left<br><span style="font-size: 32px;">{mins:02d}:{secs:02d}</span>
     </div>
     """
     st.markdown(sticky_html, unsafe_allow_html=True)
     
-    # 4. EXAM CONTENT
     questions = run_query("SELECT * FROM questions", fetch=True)
-    if 'user
+    if 'user_answers' not in st.session_state:
+        st.session_state['user_answers'] = {}
+
+    st.write("## Final Exam Questions")
+    st.write("---")
+    
+    for q in questions:
+        qid = q[0]
+        opts = [q[2], q[3], q[4], q[5]]
+        prev = st.session_state['user_answers'].get(qid, None)
+        idx = opts.index(prev) if prev in opts else None
+        
+        val = st.radio(f"**Q. {q[1]}**", opts, index=idx, key=f"q_{qid}")
+        st.session_state['user_answers'][qid] = val
+        st.write("---")
+
+    if st.button("Submit Final Answers", type="primary"):
+        calculate_and_submit(user)
+        st.rerun()
+    
+    time.sleep(1)
+    st.rerun()
+
+# --- MAIN ---
+init_db()
+
+if 'user' not in st.session_state:
+    page_login()
+else:
+    st.sidebar.write(f"User: {st.session_state['user']}")
+    if st.sidebar.button("Logout"):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+        
+    if st.session_state['role'] == 'admin':
+        page_admin()
+    else:
+        page_exam()
