@@ -7,7 +7,8 @@ import hashlib
 import pytz
 
 # --- CONFIGURATION ---
-DB_FILE = "exam_system.db"
+# We changed the filename to v2 to ensure a fresh DB is created with the new 'marks' column
+DB_FILE = "exam_system_v2.db" 
 st.set_page_config(page_title="Online Exam Portal", layout="wide")
 
 # Define India Timezone
@@ -26,8 +27,9 @@ def run_query(query, params=(), fetch=False):
     conn.close()
 
 def init_db():
+    # Added 'marks' column to users table
     run_query('''CREATE TABLE IF NOT EXISTS users 
-                 (username TEXT PRIMARY KEY, password TEXT, role TEXT, score REAL)''')
+                 (username TEXT PRIMARY KEY, password TEXT, role TEXT, score REAL, marks REAL)''')
     run_query('''CREATE TABLE IF NOT EXISTS config 
                  (key TEXT PRIMARY KEY, value TEXT)''')
     run_query('''CREATE TABLE IF NOT EXISTS questions 
@@ -36,8 +38,9 @@ def init_db():
     
     # Create Admin
     if not run_query("SELECT * FROM users WHERE role='admin'", fetch=True):
-        run_query("INSERT INTO users VALUES (?, ?, ?, ?)", 
-                  ('admin', hashlib.sha256(b'admin123').hexdigest(), 'admin', 0))
+        # Admin gets 0 marks, 0 score by default
+        run_query("INSERT INTO users VALUES (?, ?, ?, ?, ?)", 
+                  ('admin', hashlib.sha256(b'admin123').hexdigest(), 'admin', 0, 0))
 
 # --- HELPER FUNCTIONS ---
 def make_hashes(password):
@@ -57,10 +60,10 @@ def calculate_and_submit(user):
     questions = run_query("SELECT * FROM questions", fetch=True)
     user_ans = st.session_state.get('user_answers', {})
     
-    score = 0
-    total = len(questions)
+    total_marks = 0
+    total_questions = len(questions)
     
-    if total == 0:
+    if total_questions == 0:
         return 0
 
     for q in questions:
@@ -69,12 +72,16 @@ def calculate_and_submit(user):
         selected = user_ans.get(qid, None)
         
         if selected == correct:
-            score += 1
+            total_marks += 1  # +1 for correct
         elif selected is not None and is_neg:
-            score -= pen_val
-            
-    final_percent = (score / total) * 100
-    run_query("UPDATE users SET score=? WHERE username=?", (final_percent, user))
+            total_marks -= pen_val # -Penalty for wrong
+    
+    # Calculate Percentage
+    # Max marks is equal to total questions (since each is 1 mark)
+    final_percent = (total_marks / total_questions) * 100
+    
+    # Update both Percentage and Raw Marks in DB
+    run_query("UPDATE users SET score=?, marks=? WHERE username=?", (final_percent, total_marks, user))
     return final_percent
 
 # --- PAGES ---
@@ -103,8 +110,9 @@ def page_login():
             if run_query("SELECT * FROM users WHERE username=?", (new_u,), fetch=True):
                 st.error("User exists")
             else:
-                run_query("INSERT INTO users VALUES (?, ?, ?, ?)", 
-                          (new_u, make_hashes(new_p), 'student', -999))
+                # Insert new user with -999 for both score and marks
+                run_query("INSERT INTO users VALUES (?, ?, ?, ?, ?)", 
+                          (new_u, make_hashes(new_p), 'student', -999, -999))
                 st.success("Account created! Please Login.")
 
 def page_admin():
@@ -115,14 +123,11 @@ def page_admin():
 
     st.subheader("1. Schedule Exam")
     
-    # --- FIX: READ DB FIRST TO SET DEFAULTS ---
     current_start = run_query("SELECT value FROM config WHERE key='start_time'", fetch=True)
     
-    # Default is NOW
     default_date = now_ist.date()
     default_time = now_ist.time()
     
-    # If DB has a time, use THAT as default
     if current_start:
         try:
             saved_dt = datetime.datetime.fromisoformat(current_start[0][0])
@@ -139,7 +144,6 @@ def page_admin():
 
     with st.form("settings_form"):
         c1, c2 = st.columns(2)
-        # CRITICAL: We use 'value=' to ensure input box respects the DB time
         exam_d = c1.date_input("Exam Date", value=default_date)
         exam_t = c2.time_input("Start Time", value=default_time)
         dur = st.number_input("Duration (minutes)", value=30, min_value=1)
@@ -174,22 +178,31 @@ def page_admin():
         st.success("Questions uploaded successfully")
 
     st.subheader("3. Student Results")
-    res = run_query("SELECT username, score FROM users WHERE role='student'", fetch=True)
+    # Fetch marks and score
+    res = run_query("SELECT username, marks, score FROM users WHERE role='student'", fetch=True)
     if res:
-        df = pd.DataFrame(res, columns=['Student', 'Score %'])
-        st.dataframe(df[df['Score %'] != -999]) 
+        df = pd.DataFrame(res, columns=['Student', 'Marks Obtained', 'Percentage %'])
+        # Filter out those who haven't taken exam (-999)
+        st.dataframe(df[df['Percentage %'] != -999]) 
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button("Download CSV", csv, "results.csv", "text/csv")
 
 def page_exam():
     user = st.session_state['user']
     
-    my_score = run_query("SELECT score FROM users WHERE username=?", (user,), fetch=True)[0][0]
+    # 1. Check if submitted by checking score
+    user_data = run_query("SELECT score, marks FROM users WHERE username=?", (user,), fetch=True)
+    my_score = user_data[0][0]
+    my_marks = user_data[0][1]
+
     if my_score != -999:
         st.info("Exam Submitted.")
         show_res = run_query("SELECT value FROM config WHERE key='show_result'", fetch=True)
         if show_res and show_res[0][0] == '1':
-            st.metric("Your Score", f"{my_score:.2f} %")
+            # Display Score AND Marks
+            c1, c2 = st.columns(2)
+            c1.metric("Marks Obtained", f"{my_marks}")
+            c2.metric("Percentage", f"{my_score:.2f} %")
         else:
             st.write("Results hidden.")
         return
