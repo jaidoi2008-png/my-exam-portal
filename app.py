@@ -4,12 +4,14 @@ import sqlite3
 import datetime
 import time
 import hashlib
+import pytz # NEW LIBRARY FOR TIMEZONES
 
-# --- SETUP & CONFIG ---
-# We use a file-based DB. WARNING: On Streamlit Cloud, this resets if the app reboots.
-# You must download results immediately after the exam.
+# --- CONFIGURATION ---
 DB_FILE = "exam_system.db"
 st.set_page_config(page_title="Online Exam Portal", layout="wide")
+
+# Define India Timezone
+IST = pytz.timezone('Asia/Kolkata')
 
 # --- DATABASE ENGINE ---
 def run_query(query, params=(), fetch=False):
@@ -32,7 +34,7 @@ def init_db():
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   question TEXT, opt1 TEXT, opt2 TEXT, opt3 TEXT, opt4 TEXT, correct_opt TEXT)''')
     
-    # Create Admin (User: admin, Pass: admin123)
+    # Create Admin
     if not run_query("SELECT * FROM users WHERE role='admin'", fetch=True):
         run_query("INSERT INTO users VALUES (?, ?, ?, ?)", 
                   ('admin', hashlib.sha256(b'admin123').hexdigest(), 'admin', 0))
@@ -41,8 +43,11 @@ def init_db():
 def make_hashes(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
+def get_current_time():
+    """Returns current time in IST"""
+    return datetime.datetime.now(IST)
+
 def calculate_and_submit(user):
-    # Fetch Marking Rules
     neg_mark = run_query("SELECT value FROM config WHERE key='neg_marking'", fetch=True)
     penalty = run_query("SELECT value FROM config WHERE key='penalty'", fetch=True)
     
@@ -102,6 +107,10 @@ def page_login():
 def page_admin():
     st.title("Admin Panel")
     
+    # DEBUG: Show current time to Admin to be sure
+    now_ist = get_current_time()
+    st.info(f"Current Server Time (IST): {now_ist.strftime('%Y-%m-%d %H:%M:%S')}")
+
     st.subheader("1. Exam Settings")
     defaults = {}
     for k in ['start_time', 'duration', 'neg_marking', 'penalty', 'show_result']:
@@ -110,18 +119,22 @@ def page_admin():
 
     with st.form("settings_form"):
         c1, c2 = st.columns(2)
-        exam_d = c1.date_input("Exam Date")
-        exam_t = c2.time_input("Start Time")
+        # Default to current IST time
+        exam_d = c1.date_input("Exam Date", value=now_ist.date())
+        exam_t = c2.time_input("Start Time", value=now_ist.time())
         dur = st.number_input("Duration (minutes)", value=30, min_value=1)
         
         st.markdown("**Scoring Rules**")
         ena_neg = st.checkbox("Enable Negative Marking?", value=(defaults['neg_marking']=='1'))
-        pen_amt = st.number_input("Penalty (e.g., 0.25)", value=0.25, step=0.05)
-        show_res = st.checkbox("Show result to student immediately?", value=True)
+        pen_amt = st.number_input("Penalty", value=0.25, step=0.05)
+        show_res = st.checkbox("Show result immediately?", value=True)
         
         if st.form_submit_button("Save Settings"):
-            start_dt = datetime.datetime.combine(exam_d, exam_t).isoformat()
-            run_query("INSERT OR REPLACE INTO config VALUES ('start_time', ?)", (start_dt,))
+            # Combine Date and Time and attach IST timezone info
+            dt_naive = datetime.datetime.combine(exam_d, exam_t)
+            dt_aware = IST.localize(dt_naive)
+            
+            run_query("INSERT OR REPLACE INTO config VALUES ('start_time', ?)", (dt_aware.isoformat(),))
             run_query("INSERT OR REPLACE INTO config VALUES ('duration', ?)", (str(dur),))
             run_query("INSERT OR REPLACE INTO config VALUES ('neg_marking', ?)", ('1' if ena_neg else '0',))
             run_query("INSERT OR REPLACE INTO config VALUES ('penalty', ?)", (str(pen_amt),))
@@ -142,17 +155,9 @@ def page_admin():
     res = run_query("SELECT username, score FROM users WHERE role='student'", fetch=True)
     if res:
         df = pd.DataFrame(res, columns=['Student', 'Score %'])
-        # Show results
         st.dataframe(df[df['Score %'] != -999]) 
-        
-        # DOWNLOAD BUTTON
         csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download Results as CSV",
-            data=csv,
-            file_name='exam_results.csv',
-            mime='text/csv',
-        )
+        st.download_button("Download CSV", csv, "results.csv", "text/csv")
 
 def page_exam():
     user = st.session_state['user']
@@ -176,13 +181,16 @@ def page_exam():
         st.warning("Exam not scheduled.")
         return
 
+    # Parse Time (Handle IST)
     start_dt = datetime.datetime.fromisoformat(start_str[0][0])
     end_dt = start_dt + datetime.timedelta(minutes=int(dur_str[0][0]))
-    now = datetime.datetime.now()
+    now = get_current_time()
 
+    # Time Logic
     if now < start_dt:
-        st.warning(f"Exam starts at {start_dt}")
-        time.sleep(5)
+        st.warning(f"Exam starts at: {start_dt.strftime('%H:%M:%S')}")
+        st.info(f"Current Time: {now.strftime('%H:%M:%S')}")
+        time.sleep(2) # Refresh faster
         st.rerun()
         return
 
@@ -204,10 +212,8 @@ def page_exam():
     for q in questions:
         qid = q[0]
         opts = [q[2], q[3], q[4], q[5]]
-        
         prev = st.session_state['user_answers'].get(qid, None)
         idx = opts.index(prev) if prev else None
-        
         val = st.radio(f"**{q[1]}**", opts, index=idx, key=qid)
         st.session_state['user_answers'][qid] = val
         st.write("---")
@@ -233,5 +239,4 @@ else:
     if st.session_state['role'] == 'admin':
         page_admin()
     else:
-
         page_exam()
