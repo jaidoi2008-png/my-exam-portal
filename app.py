@@ -7,7 +7,6 @@ import hashlib
 import pytz
 
 # --- CONFIGURATION ---
-# We changed the filename to v2 to ensure a fresh DB is created with the new 'marks' column
 DB_FILE = "exam_system_v2.db" 
 st.set_page_config(page_title="Online Exam Portal", layout="wide")
 
@@ -27,7 +26,6 @@ def run_query(query, params=(), fetch=False):
     conn.close()
 
 def init_db():
-    # Added 'marks' column to users table
     run_query('''CREATE TABLE IF NOT EXISTS users 
                  (username TEXT PRIMARY KEY, password TEXT, role TEXT, score REAL, marks REAL)''')
     run_query('''CREATE TABLE IF NOT EXISTS config 
@@ -38,7 +36,6 @@ def init_db():
     
     # Create Admin
     if not run_query("SELECT * FROM users WHERE role='admin'", fetch=True):
-        # Admin gets 0 marks, 0 score by default
         run_query("INSERT INTO users VALUES (?, ?, ?, ?, ?)", 
                   ('admin', hashlib.sha256(b'admin123').hexdigest(), 'admin', 0, 0))
 
@@ -72,15 +69,11 @@ def calculate_and_submit(user):
         selected = user_ans.get(qid, None)
         
         if selected == correct:
-            total_marks += 1  # +1 for correct
+            total_marks += 1 
         elif selected is not None and is_neg:
-            total_marks -= pen_val # -Penalty for wrong
-    
-    # Calculate Percentage
-    # Max marks is equal to total questions (since each is 1 mark)
+            total_marks -= pen_val 
+            
     final_percent = (total_marks / total_questions) * 100
-    
-    # Update both Percentage and Raw Marks in DB
     run_query("UPDATE users SET score=?, marks=? WHERE username=?", (final_percent, total_marks, user))
     return final_percent
 
@@ -94,26 +87,32 @@ def page_login():
         user = st.text_input("Username")
         pwd = st.text_input("Password", type="password")
         if st.button("Login"):
-            hashed = make_hashes(pwd)
-            data = run_query("SELECT * FROM users WHERE username=? AND password=?", (user, hashed), fetch=True)
-            if data:
-                st.session_state['user'] = data[0][0]
-                st.session_state['role'] = data[0][2]
-                st.rerun()
+            # FIX: Check if username or password is blank
+            if not user.strip() or not pwd.strip():
+                st.error("Username and Password cannot be blank.")
             else:
-                st.error("Invalid credentials")
+                hashed = make_hashes(pwd)
+                data = run_query("SELECT * FROM users WHERE username=? AND password=?", (user, hashed), fetch=True)
+                if data:
+                    st.session_state['user'] = data[0][0]
+                    st.session_state['role'] = data[0][2]
+                    st.rerun()
+                else:
+                    st.error("Invalid credentials")
 
     with tab2:
         new_u = st.text_input("New Username")
         new_p = st.text_input("New Password", type="password")
         if st.button("Create Account"):
-            if run_query("SELECT * FROM users WHERE username=?", (new_u,), fetch=True):
-                st.error("User exists")
+            # FIX: Check if username or password is blank
+            if not new_u.strip() or not new_p.strip():
+                st.error("Username and Password cannot be blank.")
+            elif run_query("SELECT * FROM users WHERE username=?", (new_u,), fetch=True):
+                st.error("Username already exists. Please choose a different one.")
             else:
-                # Insert new user with -999 for both score and marks
                 run_query("INSERT INTO users VALUES (?, ?, ?, ?, ?)", 
                           (new_u, make_hashes(new_p), 'student', -999, -999))
-                st.success("Account created! Please Login.")
+                st.success("Account created successfully! Please go to the Login tab.")
 
 def page_admin():
     st.title("Admin Panel")
@@ -178,11 +177,9 @@ def page_admin():
         st.success("Questions uploaded successfully")
 
     st.subheader("3. Student Results")
-    # Fetch marks and score
     res = run_query("SELECT username, marks, score FROM users WHERE role='student'", fetch=True)
     if res:
         df = pd.DataFrame(res, columns=['Student', 'Marks Obtained', 'Percentage %'])
-        # Filter out those who haven't taken exam (-999)
         st.dataframe(df[df['Percentage %'] != -999]) 
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button("Download CSV", csv, "results.csv", "text/csv")
@@ -190,7 +187,6 @@ def page_admin():
 def page_exam():
     user = st.session_state['user']
     
-    # 1. Check if submitted by checking score
     user_data = run_query("SELECT score, marks FROM users WHERE username=?", (user,), fetch=True)
     my_score = user_data[0][0]
     my_marks = user_data[0][1]
@@ -199,7 +195,6 @@ def page_exam():
         st.info("Exam Submitted.")
         show_res = run_query("SELECT value FROM config WHERE key='show_result'", fetch=True)
         if show_res and show_res[0][0] == '1':
-            # Display Score AND Marks
             c1, c2 = st.columns(2)
             c1.metric("Marks Obtained", f"{my_marks}")
             c2.metric("Percentage", f"{my_score:.2f} %")
@@ -218,7 +213,6 @@ def page_exam():
     end_dt = start_dt + datetime.timedelta(minutes=int(dur_str[0][0]))
     now = get_current_time()
 
-    # --- WAITING ROOM ---
     if now < start_dt:
         st.empty() 
         wait_seconds = (start_dt - now).total_seconds()
@@ -236,14 +230,12 @@ def page_exam():
         st.rerun()
         return
 
-    # --- TIME EXPIRED ---
     if now > end_dt:
         st.error("Time is up! Auto-submitting...")
         calculate_and_submit(user)
         st.rerun()
         return
 
-    # --- EXAM STARTED ---
     left_sec = (end_dt - now).total_seconds()
     mins = int(left_sec // 60)
     secs = int(left_sec % 60)
